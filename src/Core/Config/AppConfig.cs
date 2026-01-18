@@ -10,7 +10,9 @@ namespace KernelMemory.Core.Config;
 /// Root configuration for Kernel Memory application
 /// Loaded from ~/.km/config.json or custom path
 /// </summary>
+#pragma warning disable CA1724 // Conflicts with Microsoft.Identity.Client.AppConfig when Azure.Identity is referenced.
 public sealed class AppConfig : IValidatable
+#pragma warning restore CA1724
 {
     /// <summary>
     /// Named memory nodes (e.g., "personal", "work")
@@ -83,7 +85,8 @@ public sealed class AppConfig : IValidatable
 
     /// <summary>
     /// Creates a default configuration with a single "personal" node
-    /// using local SQLite storage in the specified base directory
+    /// using local SQLite storage in the specified base directory.
+    /// Includes embeddings cache for efficient vector search operations.
     /// </summary>
     /// <param name="baseDir">Base directory for data storage</param>
     public static AppConfig CreateDefault(string baseDir)
@@ -95,8 +98,10 @@ public sealed class AppConfig : IValidatable
             Nodes = new Dictionary<string, NodeConfig>
             {
                 ["personal"] = NodeConfig.CreateDefaultPersonalNode(personalNodeDir)
-            }
-            // EmbeddingsCache and LLMCache intentionally omitted - add when features are implemented
+            },
+            EmbeddingsCache = CacheConfig.CreateDefaultSqliteCache(
+                Path.Combine(baseDir, "embeddings-cache.db"))
+            // LLMCache intentionally omitted - add when LLM features are implemented
         };
     }
 }

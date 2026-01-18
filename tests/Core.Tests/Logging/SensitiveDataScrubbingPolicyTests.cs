@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using KernelMemory.Core.Logging;
 using Serilog.Core;
 using Serilog.Events;
 
@@ -11,6 +10,7 @@ namespace KernelMemory.Core.Tests.Logging;
 /// In Production environment, all string parameters must be scrubbed to prevent data leakage.
 /// In Development/Staging, full logging is allowed for debugging.
 /// </summary>
+[Collection("EnvironmentVariables")]
 public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
 {
     private readonly string? _originalDotNetEnv;
@@ -21,7 +21,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     /// </summary>
     public SensitiveDataScrubbingPolicyTests()
     {
-        this._originalDotNetEnv = Environment.GetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable);
+        this._originalDotNetEnv = Environment.GetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable);
         this._policy = new SensitiveDataScrubbingPolicy();
     }
 
@@ -32,11 +32,11 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     {
         if (this._originalDotNetEnv != null)
         {
-            Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, this._originalDotNetEnv);
+            Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, this._originalDotNetEnv);
         }
         else
         {
-            Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, null);
+            Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, null);
         }
 
         GC.SuppressFinalize(this);
@@ -50,7 +50,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndString_ShouldScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
         const string sensitiveValue = "secret-api-key-12345";
 
         // Act
@@ -60,7 +60,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
         Assert.True(handled);
         Assert.NotNull(result);
         Assert.IsType<ScalarValue>(result);
-        Assert.Equal(LoggingConstants.RedactedPlaceholder, ((ScalarValue)result).Value);
+        Assert.Equal(Constants.LoggingDefaults.RedactedPlaceholder, ((ScalarValue)result).Value);
     }
 
     /// <summary>
@@ -71,7 +71,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenDevelopmentAndString_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Development");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Development");
         const string value = "test-value";
 
         // Act
@@ -90,8 +90,8 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenNoEnvironmentAndString_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, null);
-        Environment.SetEnvironmentVariable(LoggingConstants.AspNetCoreEnvironmentVariable, null);
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, null);
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.AspNetCoreEnvironmentVariable, null);
         const string value = "test-value";
 
         // Act
@@ -110,7 +110,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndInteger_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
 
         // Act
         var handled = this._policy.TryDestructure(42, new TestPropertyValueFactory(), out var result);
@@ -128,7 +128,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndDateTime_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
         var dateTime = DateTimeOffset.UtcNow;
 
         // Act
@@ -147,7 +147,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndBoolean_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
 
         // Act
         var handled = this._policy.TryDestructure(true, new TestPropertyValueFactory(), out var result);
@@ -165,7 +165,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndGuid_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
         var guid = Guid.NewGuid();
 
         // Act
@@ -184,7 +184,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndEmptyString_ShouldScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
 
         // Act
         var handled = this._policy.TryDestructure(string.Empty, new TestPropertyValueFactory(), out var result);
@@ -192,7 +192,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
         // Assert
         Assert.True(handled);
         Assert.NotNull(result);
-        Assert.Equal(LoggingConstants.RedactedPlaceholder, ((ScalarValue)result).Value);
+        Assert.Equal(Constants.LoggingDefaults.RedactedPlaceholder, ((ScalarValue)result).Value);
     }
 
     /// <summary>
@@ -203,7 +203,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenProductionAndNull_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Production");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Production");
 
         // Act
         var handled = this._policy.TryDestructure(null!, new TestPropertyValueFactory(), out var result);
@@ -221,7 +221,7 @@ public sealed class SensitiveDataScrubbingPolicyTests : IDisposable
     public void TryDestructure_WhenStagingAndString_ShouldNotScrub()
     {
         // Arrange
-        Environment.SetEnvironmentVariable(LoggingConstants.DotNetEnvironmentVariable, "Staging");
+        Environment.SetEnvironmentVariable(Constants.LoggingDefaults.DotNetEnvironmentVariable, "Staging");
         const string value = "test-value";
 
         // Act

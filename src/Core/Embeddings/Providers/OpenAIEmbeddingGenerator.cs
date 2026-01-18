@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using KernelMemory.Core.Config.Enums;
+using KernelMemory.Core.Http;
 using Microsoft.Extensions.Logging;
 
 namespace KernelMemory.Core.Embeddings.Providers;
@@ -17,7 +18,9 @@ public sealed class OpenAIEmbeddingGenerator : IEmbeddingGenerator
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
     private readonly string _baseUrl;
+    private readonly int _batchSize;
     private readonly ILogger<OpenAIEmbeddingGenerator> _logger;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
 
     /// <inheritdoc />
     public EmbeddingsTypes ProviderType => EmbeddingsTypes.OpenAI;
@@ -41,6 +44,8 @@ public sealed class OpenAIEmbeddingGenerator : IEmbeddingGenerator
     /// <param name="isNormalized">Whether vectors are normalized.</param>
     /// <param name="baseUrl">Optional custom base URL for OpenAI-compatible APIs.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="batchSize">Maximum number of texts per API request.</param>
+    /// <param name="delayAsync">Optional delay function for retries (used for fast unit tests).</param>
     public OpenAIEmbeddingGenerator(
         HttpClient httpClient,
         string apiKey,
@@ -48,42 +53,59 @@ public sealed class OpenAIEmbeddingGenerator : IEmbeddingGenerator
         int vectorDimensions,
         bool isNormalized,
         string? baseUrl,
-        ILogger<OpenAIEmbeddingGenerator> logger)
+        ILogger<OpenAIEmbeddingGenerator> logger,
+        int batchSize,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
         ArgumentNullException.ThrowIfNull(httpClient, nameof(httpClient));
         ArgumentNullException.ThrowIfNull(apiKey, nameof(apiKey));
         ArgumentException.ThrowIfNullOrEmpty(apiKey, nameof(apiKey));
         ArgumentNullException.ThrowIfNull(model, nameof(model));
         ArgumentNullException.ThrowIfNull(logger, nameof(logger));
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1, nameof(batchSize));
 
         this._httpClient = httpClient;
         this._apiKey = apiKey;
-        this._baseUrl = (baseUrl ?? EmbeddingConstants.DefaultOpenAIBaseUrl).TrimEnd('/');
+        this._baseUrl = (baseUrl ?? Constants.EmbeddingDefaults.DefaultOpenAIBaseUrl).TrimEnd('/');
+        this._batchSize = batchSize;
         this.ModelName = model;
         this.VectorDimensions = vectorDimensions;
         this.IsNormalized = isNormalized;
         this._logger = logger;
+        this._delayAsync = delayAsync ?? Task.Delay;
 
         this._logger.LogDebug("OpenAIEmbeddingGenerator initialized: {BaseUrl}, model: {Model}, dimensions: {Dimensions}",
             this._baseUrl, this.ModelName, this.VectorDimensions);
     }
 
     /// <inheritdoc />
-    public async Task<float[]> GenerateAsync(string text, CancellationToken ct = default)
+    public async Task<EmbeddingResult> GenerateAsync(string text, CancellationToken ct = default)
     {
         var results = await this.GenerateAsync(new[] { text }, ct).ConfigureAwait(false);
         return results[0];
     }
 
     /// <inheritdoc />
-    public async Task<float[][]> GenerateAsync(IEnumerable<string> texts, CancellationToken ct = default)
+    public async Task<EmbeddingResult[]> GenerateAsync(IEnumerable<string> texts, CancellationToken ct = default)
     {
         var textArray = texts.ToArray();
         if (textArray.Length == 0)
         {
-            return Array.Empty<float[]>();
+            return [];
         }
 
+        var allResults = new List<EmbeddingResult>(textArray.Length);
+        foreach (var chunk in Chunk(textArray, this._batchSize))
+        {
+            var chunkResults = await this.GenerateBatchAsync(chunk, ct).ConfigureAwait(false);
+            allResults.AddRange(chunkResults);
+        }
+
+        return allResults.ToArray();
+    }
+
+    private async Task<EmbeddingResult[]> GenerateBatchAsync(string[] textArray, CancellationToken ct)
+    {
         var endpoint = $"{this._baseUrl}/v1/embeddings";
 
         var request = new OpenAIEmbeddingRequest
@@ -92,14 +114,22 @@ public sealed class OpenAIEmbeddingGenerator : IEmbeddingGenerator
             Input = textArray
         };
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", this._apiKey);
-        httpRequest.Content = JsonContent.Create(request);
-
         this._logger.LogTrace("Calling OpenAI embeddings API: {Endpoint}, batch size: {BatchSize}",
             endpoint, textArray.Length);
 
-        var response = await this._httpClient.SendAsync(httpRequest, ct).ConfigureAwait(false);
+        using var response = await HttpRetryPolicy.SendAsync(
+            this._httpClient,
+            requestFactory: () =>
+            {
+                var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", this._apiKey);
+                httpRequest.Content = JsonContent.Create(request);
+                return httpRequest;
+            },
+            this._logger,
+            ct,
+            delayAsync: this._delayAsync).ConfigureAwait(false);
+
         response.EnsureSuccessStatusCode();
 
         var result = await response.Content.ReadFromJsonAsync<OpenAIEmbeddingResponse>(ct).ConfigureAwait(false);
@@ -111,12 +141,42 @@ public sealed class OpenAIEmbeddingGenerator : IEmbeddingGenerator
 
         // Sort by index to ensure correct ordering
         var sortedData = result.Data.OrderBy(d => d.Index).ToArray();
-        var embeddings = sortedData.Select(d => d.Embedding).ToArray();
+
+        // Get total token count from API response
+        var totalTokens = result.Usage?.TotalTokens;
 
         this._logger.LogTrace("OpenAI returned {Count} embeddings, usage: {TotalTokens} tokens",
-            embeddings.Length, result.Usage?.TotalTokens);
+            sortedData.Length, totalTokens);
 
-        return embeddings;
+        // Calculate per-embedding token count if total tokens available
+        // For batch requests, we distribute tokens evenly across embeddings (approximation)
+        int? perEmbeddingTokens = null;
+        if (totalTokens.HasValue && sortedData.Length > 0)
+        {
+            perEmbeddingTokens = totalTokens.Value / sortedData.Length;
+        }
+
+        // Create EmbeddingResult for each embedding with token count
+        var results = new EmbeddingResult[sortedData.Length];
+        for (int i = 0; i < sortedData.Length; i++)
+        {
+            results[i] = perEmbeddingTokens.HasValue
+                ? EmbeddingResult.FromVectorWithTokens(sortedData[i].Embedding, perEmbeddingTokens.Value)
+                : EmbeddingResult.FromVector(sortedData[i].Embedding);
+        }
+
+        return results;
+    }
+
+    private static IEnumerable<string[]> Chunk(string[] items, int chunkSize)
+    {
+        for (int i = 0; i < items.Length; i += chunkSize)
+        {
+            var length = Math.Min(chunkSize, items.Length - i);
+            var chunk = new string[length];
+            Array.Copy(items, i, chunk, 0, length);
+            yield return chunk;
+        }
     }
 
     /// <summary>
